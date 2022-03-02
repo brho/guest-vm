@@ -38,7 +38,6 @@ sudo rm -rf tc_root
 mkdir tc_root
 chmod 777 tc_root
 (cd tc_root && zcat ../corepure64.gz | sudo cpio -H newc -i)
-(cd tc_root && sudo ln -s lib lib64)
 
 ######## BASIC DISTRO SETUP
 
@@ -88,6 +87,9 @@ else
 	rm /dev/tty1
 	ln -s ttyS0 /dev/tty1
 fi
+
+mkdir /lib64
+mount --bind /lib /lib64
 
 [[ -f /root/tc-sys.sh ]] && sh /root/tc-sys.sh
 EOF
