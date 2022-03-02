@@ -62,6 +62,7 @@ then
 	KERNEL_MODS=`pwd`/kernel_mods
 	(cd $LINUX_ROOT &&
 	 > $LINUX_ROOT/$INITRD_NAME &&
+	make -j $MAKE_JOBS &&
 	make -j $MAKE_JOBS INSTALL_MOD_PATH=$KERNEL_MODS INSTALL_MOD_STRIP=1 modules modules_install
 	)
 	sudo cp -r kernel_mods/* tc_root/ || true
