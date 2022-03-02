@@ -1,0 +1,246 @@
+brho@google.com
+2022-02-15
+
+This directory contains a bunch of scripts and working directories to build a
+Linux guest kernel and a tinycore (TC) image as an initrd.
+
+The scripts expect to be run from this directory and require sudo for mucking
+with the initrd.  Sorry.
+
+Typical usage: run full_guest_build.sh $FULL_PATH once, then as you muck with
+things, run rebuild_cpio_and_linux.sh $FULL_PATH.  If you aren't changing the
+kernel, run SKIP_KERNEL=1 ./rebuild_cpio_and_linux.sh.
+
+
+Scripts:
+--------------------
+- full_guest_build.sh: produces vmlinux and initrd from scratch.  Calls the
+  other scripts.
+
+  Run with: ./full_guest_build.sh $FULL_PATH_TO_LINUX_REPO
+  - copies kernel.config to $FULL_PATH_TO_LINUX_REPO/.config
+  - setup_tinycore.sh (creates tc_root/)
+  - copies stuff into tc_root/
+  - rebuild_cpio_and_linux.sh
+
+  Customizations:
+  - CUSTOM_BINARIES: programs from your machine to add to tc_root/usr/local/bin
+  - CUSTOM_REMOVALS: files to remove from tc_root.  e.g. libstdc++.
+  - ssh keys (looks for my key named "db_rsa", provide your own keys)
+
+
+- rebuild_cpio_and_linux.sh: build linux (vmlinux & bzimage) and the initrd,
+  using the contents of tc_root.  If you manually changed tc_root (edited files,
+  added programs) or changed the kernel (including modules), run this.
+
+  Run with: ./rebuild_cpio_and_linux.sh $FULL_PATH_TO_LINUX_REPO
+  - builds the kernel modules
+  - cpios tc_root; puts it in this directory.
+  - builds the kernel; puts it in the linux repo.
+
+  You can skip the kernel build if you want with SKIP_KERNEL=1.
+
+
+- setup_tinycore.sh: downloads TC, extracts to tc_core, and installs PACKAGES.
+  Edit the PACKAGES variable to add any tinycore packages you want, e.g.
+  openssh.  The script should find and include any dependencies.  If you change
+  any of the Magic Symlink Overrides, e.g. rcS-link, you need to rerun this.
+
+  Run with: ./setup_tinycore.sh
+  - Optionally overrides rcS and tc-sys.sh.
+  - Misc console setup
+  - Downloads and extracts PACKAGES and dependencies to tc_root
+  - SSH server setup, including hokey server private keys
+
+
+Various directories:
+--------------------
+- kernel_mods: storage for kernel mods created during the kernel build.
+- progs: compiled helper programs to run in the guest.
+- tc_root: TC's root filesystem.  Extracted and edited by the scripts
+- tczs: storage for downloaded TC programs, e.g. openssh and openssl
+- vm-apps: Akaros scripts to run an app as a guest VM, e.g. an ext4 9p server.
+
+
+Magic Symlink Overrides:
+--------------------
+You may noticed symlinks such as "rcS-link -> xxx".  If these symlinks point to
+a file, it will override or install the file into the TC image.  These are quick
+ways to change up what your guest will do at boottime without editing tc_root/
+directly.
+
+- rcS-link: replace the low-level /etc/init.d/rcS script.  This short-circuits
+  most of TC's initialization.  The default rcS mounts /proc, /, fstab, and runs
+  tc-config.  tc-config does the bulk of TC's init, such as modprobing, cmdline
+  parsing, udev stuff, etc.  Ultimately, this calls /opt/bootlocal.sh and
+  tc-sys.sh.  For an example of how to override rcS, check out
+  rcS-example-apps-and-info.  Note that "rcS-link -> xxx" is a dead link, so we
+  will not automatically override rcS.
+
+- tc-sys.sh: script run during the guest's boot, called from TC's
+  /opt/bootlocal.sh.  I use this for setting up networking.  If you override
+  rcS, you'll need to call this manually from your own rcS.
+
+
+Misc helpers:
+--------------------
+- cat_cpio_gz.sh: Dumps the contents of an initramfs to easily see what takes up
+  the most space.
+
+- embed_payload.sh: Embeds a payload with a shell script and makes it
+  executable.  Used for Akaros's vm-apps.
+
+
+Example Commands to run the Virtual Machine:
+--------------------
+- Akaros:
+  	vmrunkernel -k tinycore_cmdline -n vnet_opts -N 8 -i initramfs.cpio.gz vmlinux
+
+	tinycore_cmdline:
+		earlyprintk=akaros	# optional
+		console=hvc0
+		mitigations=off
+		nozswap			# for tinycore faster boots
+	vnet_opts:			# all optional
+		snoop
+		nat_timeout = 30
+		map_diagnostics
+		port:tcp:23:22
+
+	With this setup, you can ssh to localhost:23 and it'll port-foward to the guest.
+
+- Tun/Tap:
+	A bunch of VMMs on Linux want a tun/tap setup.  I use tun-up.sh, which
+	is mostly this:
+
+	ip link add br-vm type bridge
+	ip addr add 10.0.2.2/24 dev br-vm 2>/dev/null || true
+	ip addr add fd0:1234:4321::2/64 dev br-vm
+	ip link set up dev br-vm
+	ip tuntap add tap-vm mode tap
+	ip link set up dev tap-vm
+	ip link set tap-vm master br-vm
+
+	This creates a virtual network similar to the one that Qemu's usermode
+	networking will make: guest will get 10.0.2.15, host gets 10.0.2.2.
+	Akaros's VMM NAT does the same thing.
+
+	It also adds an IPv6 address, in case your host kernel is IPv6-only.
+	The guest will use fd0:1234:4321::15/64
+
+- Qemu:
+	Note that qemu takes the bzImage, but not vmlinux.  There might be some
+	kernel config issue, but my qemu with the vmlinux from these scripts
+	will complain with "qemu: linux kernel too old to load a ram disk".
+
+	If you have a tun/tap setup, with a tap named "tap-vm":
+
+	qemu-system-x86_64 -s -enable-kvm -cpu host -smp 8 -m 1024 -nographic \
+	-kernel arch/x86/boot/bzImage -initrd initramfs.cpio.gz \
+	-append "console=ttyS0 nozswap" \
+	-device virtio-net-pci,netdev=vmnet,mac=00:01:02:03:04:0b \
+	-netdev tap,id=vmnet,ifname=tap-vm,script=no,downscript=no
+
+	You can also use the old user-mode networking (forwarding host 5555 to
+	guest 22).  Replace the -device and -netdev with:
+	-net nic,model=e1000 -net user,hostfwd=tcp::5555-:22
+
+	There are plenty of other options.
+
+	Either way, the guest will have IP 10.0.2.15, gateway 10.0.2.2 (the
+	host).  For usermode networking, that comes from DHCP.  For the tun/tap,
+	that comes from the magic MAC address 00:01:02:03:04:0b.  The tinycore VM
+	has an init script that looks for that address and statically configures
+	networking.
+
+	You can add other linux command line args, such as console=hvc or
+	"console=ttyS0 earlyprintk=serial".  hvc (virtio-cons) didn't get the
+	bootspew that ttyS0 gets, which helps with debugging, so YMMV.
+
+	To stop the guest, try "Ctl-A, X".  "Ctl-A, C" gives you the qemu
+	monitor.
+
+	The biggest thing with qemu for me is that it jacks up your terminal,
+	such that the console text won't wrap anymore.  Try:
+
+	tput smam
+
+	I put that in all of my qemu scripts and even have a bash alias for it.
+
+- Cloud Hypervisor:
+
+	./target/release/cloud-hypervisor --console off --serial tty \
+	--cpus boot=8 --memory size=1024M \
+	--kernel vmlinux --initramfs initramfs.cpio.gz \
+	--cmdline "console=ttyS0 nozswap" \
+	--net tap=tap-vm,mac=00:01:02:03:04:0b,ip=,mask=
+
+	Same as with qemu, hvc0 works, but is a little on the quiet side.
+	nozswap is for tinycore.  The MAC address tells the guest to set itself
+	up as 10.0.2.15.
+
+	To stop the guest, there's some involved incantation to tell
+	cloud-hypervisor to shutdown, but I just:
+
+	killall cloud-hypervisor
+
+- SSHing to the guest under various environments:
+
+	If the guest is listening on host port 5555 (from my example qemu
+	usermode networking), set up your ~/.ssh/config like so:  The
+	IdentityFile is the one you specified in full_guest_build.sh.
+
+	Host qemu
+		Hostname 127.0.0.1
+		User root
+		Port 5555
+		IdentitiesOnly yes
+		IdentityFile ~/.ssh/db_rsa
+
+	This ought to work for a tap:
+
+	Host qemu-tap
+		Hostname 10.0.2.15
+		User root
+		Port 22
+		IdentitiesOnly yes
+		IdentityFile ~/.ssh/db_rsa
+
+	But if your workstation has an "ssh-unfriendly" policy, you might have
+	issues.
+
+	Instead, you can use port forwarding.  Set up a tunnel from your
+	workstation's 5555 to the VM guest's 22 on the tun/tap network of your
+	workstation.
+
+	ssh -L 5555:10.0.2.15:22 127.0.0.1
+
+	Now you can ssh to the guest just like with qemu's usermode net port
+	forwarding. (ssh qemu, from above).
+
+	Similarly, if you're running the VM on *another* host that you have ssh
+	access to, but you can't ssh to any port other than 22, you can forward
+	from your workstation's 2345 to the host's port where the guest is
+	listening.
+
+	ssh -L 2345:127.0.0.1:23 $HOST
+
+	I'll use that to ssh from my Linux workstation to an Akaros $HOST
+	(though it could also be Linux).  The tunnel endpoint is $HOST,
+	connecting to it's localhost:23, which I'll often port-forward to the
+	guest (e.g. in Akaros's vnet_opts above).
+
+	Host linux-guest
+		Hostname 127.0.0.1
+		User root
+		Port 2345
+		IdentitiesOnly yes
+		IdentityFile ~/.ssh/db_rsa
+
+	If you don't want to mess around with ssh-config, you can do:
+
+	ssh -o IdentitiesOnly=yes -o IdentityFile=db_rsa root@fd0:1234:4321::15
+
+	or even make a bash alias:
+
+	alias ssh-guest-v6="ssh -o IdentitiesOnly=yes -o IdentityFile=db_rsa root@fd0:1234:4321::15"

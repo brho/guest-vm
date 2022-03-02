@@ -1,0 +1,99 @@
+#!/bin/sh
+# TC init override.  Skip tinycore's initialization and run your own small app.
+#
+# This has some examples and more info than you really need.
+
+# Things that take time:
+# - The standard mount commands (proc, root, fstab).  A few ms.
+# - hvc0's commands in bootlocal.sh: rm and ln.  about 6 ms.
+#	skipped those: only needed when we ran a full TC, which expects to talk
+#	to tty1.
+# - eth0 ifconfig and route: 6 ms (tc-sys.sh)
+# - start openssh: 32 ms
+# - kernel:
+#	- run without earlyprintk, saves 30 ms (MCP).
+#	- console=none is nice, noticeable as an SCP (one core for the VMM/VM)
+#	- if you run with console=none, you can redirect to /dev/hvc0 still
+# - udev / mknod stuff:
+#	- Only take a msec or so each (note the &)
+#		/sbin/udevd --daemon 2>&1 >/dev/null
+#		/sbin/udevadm trigger --action=add 2>&1 >/dev/null &
+#	- Waiting for devices:
+#	 	- Can wait for udevadm to settle.  That's about 100 ms (SCP)
+#			/sbin/udevadm settle
+# 		- Polling for just hvc0 to appear takes about 30 ms
+#			while [ ! -c /dev/hvc0 ]; do
+#				sleep 0.01
+#			done
+#	 - mknod (lousy): This takes about 36 ms.  4-5ms per vda mknod.
+#		mknod /dev/hvc0 c 229 0
+#		mknod /dev/vda  b 254 0
+#		mknod /dev/vda1 b 254 1
+#		mknod /dev/vda2 b 254 2
+#		mknod /dev/vda3 b 254 3
+#		mknod /dev/vda4 b 254 4
+#		mknod /dev/vda5 b 254 5
+#		mknod /dev/vda6 b 254 6
+#		mknod /dev/vda7 b 254 7
+#		mknod /dev/vda8 b 254 8
+#	- Could mknod in the image too.  Either way thoug, we just hope the
+#	major/minor numbers are right, and let udev sort it out.
+#	- Using devtmpfs fixes most all of this.
+
+# Standard TC rcS is these mounts and /etc/init.d/tc-config
+[ -f /proc/cmdline ] || /bin/mount /proc
+/bin/mount -o remount,rw /
+/bin/mount -a
+
+mount -t devtmpfs devtmpfs /dev
+
+# Guts of my /opt/bootlocal.sh (skipping the hvc0 for TC, so this is just
+# networking config)
+[ -f /root/tc-sys.sh ] && . /root/tc-sys.sh
+
+shutdown() {
+	# World's second-dirtiest shutdown.
+	killall5
+	sleep 0.01
+	killall5 -9
+	umount -arf
+	tinyreboot
+}
+
+###### Apps and whatnot
+
+# Quick and dirty shell with SSH.
+echo "Starting ssh" > /dev/kmsg
+/usr/local/etc/init.d/openssh start
+
+echo "Starting ash" > /dev/kmsg
+export PS1='\(linux\) \w \$ '
+/bin/ash
+
+# UFS MOUNT START
+for i in `cat /proc/cmdline`; do
+	case $i in
+		mount_part_id=*) PART_ID=${i#*=} ;;
+		mount_port_nr=*) PORT_NR=${i#*=} ;;
+	esac
+done
+
+mount /dev/vda${PART_ID} /mnt
+ufs -root=/mnt/ -addr=0.0.0.0:${PORT_NR} &
+
+while read CMD; do
+	[ "$CMD" = "SHUTDOWN" ] && break
+done < /dev/hvc0
+
+shutdown
+# UFS MOUNT END
+
+# fdisk, using virtio-block: ~65 ms
+fdisk -l /dev/vda > /dev/hvc0
+shutdown
+
+# Here's a dumb "is the network up' check:
+# This varies greatly for SCP (~8-40ms) or MCP (6ms)
+echo "Foo start" > /dev/kmsg
+echo foo | telnet 10.0.2.2 22
+echo "Foo done" > /dev/kmsg

@@ -1,0 +1,37 @@
+#!/bin/sh
+# mount-fs TC override. 
+
+[ -f /proc/cmdline ] || /bin/mount /proc
+/bin/mount -o remount,rw /
+/bin/mount -a
+
+mount -t devtmpfs devtmpfs /dev
+
+# Networking config
+[ -f /root/tc-sys.sh ] && . /root/tc-sys.sh
+
+shutdown() {
+	# World's second-dirtiest shutdown.  Note that the Akaros mounter should
+	# have called sync (and had it return) before we kill ufs.
+	killall5
+	sleep 0.01
+	killall5 -9
+	umount -arf
+	tinyreboot
+}
+
+for i in `cat /proc/cmdline`; do
+	case $i in
+		mount_part_id=*) PART_ID=${i#*=} ;;
+		mount_port_nr=*) PORT_NR=${i#*=} ;;
+	esac
+done
+
+mount /dev/vda${PART_ID} /mnt
+ufs -root=/mnt/ -addr=0.0.0.0:${PORT_NR} &
+
+while read CMD; do
+	[ "$CMD" = "SHUTDOWN" ] && break
+done < /dev/hvc0
+
+shutdown

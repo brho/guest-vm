@@ -1,0 +1,17 @@
+#!/bin/sh
+# fdisk TC override
+
+[ -f /proc/cmdline ] || /bin/mount /proc
+
+mount -t devtmpfs devtmpfs /dev
+
+# The fdisk_args has octal-encoded spaces (040).  It's a pain to parse spaces in
+# busybox.
+for i in `cat /proc/cmdline`; do
+	case $i in
+		fdisk_args=*) FDISK_ARGS=`printf '%b\n' "${i#*=}"` ;;
+	esac
+done
+
+fdisk $FDISK_ARGS /dev/vda < /dev/hvc0 &> /dev/hvc0
+tinyreboot
