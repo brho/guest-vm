@@ -20,6 +20,11 @@
 set -e
 trap "exit" INT
 
+# Set this to the ssh key name, e.g. db_rsa (not .pub) you want to install in the
+# guest.  You'll be able to log in with this key and ssh *from* the guest with
+# it too.
+SSH_KEY=${SSH_KEY:=}
+
 # Set this to paths to binaries on your system, however you'd like.  They will
 # show up in /usr/local/bin/
 #
@@ -87,26 +92,25 @@ done
 
 ######## SSH
 # Do your own stuff here.  This lets me ssh in and out as either tc or root
-
-if [ -f ~/.ssh/db_rsa.pub ]; then
+if [ ! -z $SSH_KEY ]; then
 
 	sudo mkdir -p tc_root/home/tc/.ssh/
-	sudo cp ~/.ssh/db_rsa.pub tc_root/home/tc/.ssh/authorized_keys
-	sudo cp ~/.ssh/db_rsa.pub tc_root/home/tc/.ssh/
-	sudo cp ~/.ssh/db_rsa tc_root/home/tc/.ssh/
+	sudo cp $SSH_KEY.pub tc_root/home/tc/.ssh/authorized_keys
+	sudo cp $SSH_KEY.pub tc_root/home/tc/.ssh/
+	sudo cp $SSH_KEY tc_root/home/tc/.ssh/
 
 	sudo mkdir -p tc_root/root/.ssh/
-	sudo cp ~/.ssh/db_rsa.pub tc_root/root/.ssh/authorized_keys
-	sudo cp ~/.ssh/db_rsa.pub tc_root/root/.ssh/
-	sudo cp ~/.ssh/db_rsa tc_root/root/.ssh/
+	sudo cp $SSH_KEY.pub tc_root/root/.ssh/authorized_keys
+	sudo cp $SSH_KEY.pub tc_root/root/.ssh/
+	sudo cp $SSH_KEY tc_root/root/.ssh/
 
-# This implies the VM is using qemu mode addressing
+	# This implies the VM is using qemu mode addressing
 	sudo dd of=tc_root/home/tc/.ssh/config status=none << EOF
 Host host
 	Hostname 10.0.2.2
 	User root
 	IdentitiesOnly yes
-	IdentityFile ~/.ssh/db_rsa
+	IdentityFile ~/.ssh/`basename $SSH_KEY`
 	StrictHostKeyChecking no
 EOF
 	sudo cp tc_root/home/tc/.ssh/config tc_root/root/.ssh/
