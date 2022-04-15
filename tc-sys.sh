@@ -19,6 +19,9 @@ if [[ "$MAC" == "00:01:02:03:04:0b" ]]; then
 	echo "Detected magic paravirt mac address on $NIC, setting up static networking" > /dev/kmsg
 	killall udhcpc 2> /dev/null
 
+	# init.d/dhcp.sh did this already (udhcpc), but we might be called
+	# directly from an rcS override
+	ifconfig $NIC up
 	while : ; do
 		read CARRIER < /sys/class/net/$NIC/carrier
 		# 1 is up, but CARRIER could be empty
