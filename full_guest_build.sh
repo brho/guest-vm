@@ -29,7 +29,7 @@ SSH_KEY=${SSH_KEY:=}
 # show up in /usr/local/bin/
 #
 # Careful of spaces.
-CUSTOM_BINARIES=""
+CUSTOM_BINARIES=${CUSTOM_BINARIES:=}
 # Most of my VM apps use this.
 CUSTOM_BINARIES+=" progs/bin/tinyreboot "
 ## For mount-fs
