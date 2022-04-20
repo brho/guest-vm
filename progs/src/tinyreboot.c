@@ -12,6 +12,6 @@
 int main()
 {
 	sync();
-	reboot(RB_HALT_SYSTEM);
+	reboot(RB_POWER_OFF);
 	return -1;
 }
