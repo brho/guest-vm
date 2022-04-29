@@ -1,0 +1,257 @@
+#!/bin/bash
+# Barret Rhoden (brho@google.com)
+#
+# Run this scripts arguments as command in a vm.
+#
+# e.g.
+#
+# 	./vmapp uname -a
+# 	Linux (none) 5.16.0+ #469 SMP PREEMPT Wed Apr 27 19:19:52 EDT 2022 x86_64 GNU/Linux
+#
+# That's the guest's kernel's uname, not the hosts.  uname -a is run in the
+# guest, and output on the host.
+#
+# - You need sudo for now. (ip link add commands)
+#
+# - Check the "HARDCODES" section, and edit as you see fit.  Requires an initrd
+# with cpud installed in it.
+#
+# - The command runs from your current directory and current / (root of your fs
+# or chroot) from the host.  / is shared read-write; anything you can do to your
+# filesystem, vmapp's comand can do too.  There are also a few mounts from the
+# guest, e.g. /proc and /sys.
+#
+# - To debug: set VMAPP_DEBUG to anything (including "") in your env.  Your
+# current terminal will run the VM and cpud, with full output and a shell in the
+# guest.  Scroll up for the command to use for cpu.
+#
+# - If you want to avoid argument expansion on the host, put your command in
+# 'single quotes'.  e.g.:
+#   - expands on the host:  ./vmapp ls foo*
+#   - expands on the guest: ./vmapp 'ls foo*'
+# Arguably, it shouldn't matter much: it's the same namespace either way.  If
+# you run something like "ls /proc/*", it'll matter, since the host and guest
+# have different procfses.
+#
+# - Requires a few helper programs:
+#   - ip
+#   - nc
+#   - cpio, gzip
+#   - etc...
+#
+# - If you need exotic mounts in the guest, we'll need to edit the FSTAB
+#
+# - Your / is shared via 9p.  In the future, we can use virtiofs.
+
+# HARDCODES, or override from your env
+VMAPP_KERNEL=${VMAPP_KERNEL:="vmlinux"}
+VMAPP_INITRD=${VMAPP_INITRD:="initramfs.cpio.gz"}
+VMAPP_CHV=${VMAPP_CHV:="./cloud-hypervisor"}
+VMAPP_CPU=${VMAPP_CPU:="./cpu"}
+VMAPP_GUEST_CPUS=${VMAPP_GUEST_CPUS:="48"}
+VMAPP_GUEST_RAM=${VMAPP_GUEST_RAM:="1024M"}
+
+[ ! -f $VMAPP_KERNEL ] && echo Missing guest kernel && exit
+[ ! -f $VMAPP_INITRD ] && echo Missing initrd && exit
+[ ! -x $VMAPP_CHV ] && echo Missing cloud-hypervisor && exit
+[ ! -x $VMAPP_CPU ] && echo Missing cpu binary && exit
+
+R1=`printf '%04x' $RANDOM`
+R2=`printf '%04x' $RANDOM`
+IP_GUEST=fd0:$R1:$R2::15
+IP_HOST=fd0:$R1:$R2::2
+# Careful: ERANGE if the name is more than 15 or so
+TAP_NAME=tp-vm-$R1$R2
+BR_NAME=br-vm-$R1$R2
+
+# unique tun/tap and IP for this vmapp
+ip link add $BR_NAME type bridge
+ip addr add $IP_HOST/64 dev $BR_NAME
+ip link set up dev $BR_NAME
+ip tuntap add $TAP_NAME mode tap
+ip link set up dev $TAP_NAME
+ip link set $TAP_NAME master $BR_NAME
+
+SCRATCH=/tmp/vmapp-$R1$R2
+CHV_PID=0
+
+cleanup() {
+	set +e
+	kill $CHV_PID 2>/dev/null
+	rm -rf $SCRATCH
+	ip link delete $TAP_NAME 2>/dev/null
+	ip link delete $BR_NAME 2>/dev/null
+	# VMMs can bork your console.  CPU too, I think.
+	stty sane
+}
+trap "cleanup" EXIT
+
+# unique ssh key for this vmapp
+mkdir -p $SCRATCH/tc_root_extra/root/.ssh/
+ssh-keygen -f $SCRATCH/sshkey -t rsa -b 2048 -N "" &>/dev/null
+cp $SCRATCH/sshkey.pub $SCRATCH/tc_root_extra/root/.ssh/
+
+# rcS override.
+
+if [[ -v VMAPP_DEBUG ]]; then
+	DEBUG_DASH_D="-d"
+	DEBUG_AMP="&"
+else
+	DEBUG_DASH_D=""
+	DEBUG_AMP=""
+fi
+
+mkdir -p $SCRATCH/tc_root_extra/etc/init.d
+dd of=$SCRATCH/tc_root_extra/etc/init.d/rcS status=none <<-EOF
+# from rcS
+[ -f /proc/cmdline ] || /bin/mount /proc
+/bin/mount -o remount,rw /
+/bin/mount -a
+
+# so dynamically linked apps like tinyreboot work
+mkdir /lib64
+mount --bind /lib /lib64
+
+# reminder: CONFIG_DEVTMPFS_MOUNT doesn't affect us, since we're an initrd
+mount -t devtmpfs none /dev
+mkdir /dev/pts
+# ugly.  the devtmpfs mount masks the preexisting devpts mount
+mount -t devpts none /dev/pts
+
+
+# from tc-config
+# need to have loopback up, so that when cpud listens, it's on this:
+# tcp        0      0 :::23                   :::*                    LISTEN
+# and not this:
+# tcp        0      0 0.0.0.0:23              0.0.0.0:*               LISTEN
+ifconfig lo 127.0.0.1 up
+
+# from tc-sys.sh
+NIC=eth0
+ifconfig \$NIC up
+while : ; do
+	read CARRIER < /sys/class/net/\$NIC/carrier
+	# 1 is up, but CARRIER could be empty
+	[ "x\$CARRIER" == "x1" ] && break
+	usleep 10000
+done
+ifconfig \$NIC add $IP_GUEST/64
+
+cpud $DEBUG_DASH_D -init -pk /root/.ssh/sshkey.pub $DEBUG_AMP
+
+echo "cpud exited, might be in trouble unless you're debugging!"
+
+# for a shell.  from bootlocal.sh.
+if [[ -c /dev/hvc0 ]]; then
+	rm /dev/tty1
+	ln -s hvc0 /dev/tty1 #else
+	rm /dev/tty1
+	ln -s ttyS0 /dev/tty1
+fi
+ash
+
+EOF
+chmod +x $SCRATCH/tc_root_extra/etc/init.d/rcS
+
+cp $VMAPP_INITRD $SCRATCH/initrd_full.cpio.gz
+(cd $SCRATCH/tc_root_extra &&
+find . -print | cpio -H newc -o 2>/dev/null | gzip >> ../initrd_full.cpio.gz
+)
+
+# FSTAB
+# We will run cpu $GUEST chroot /tmp/cpu $COMMAND.  the host's filesystem will
+# appear in the guest at /tmp/cpu (in the private namespace for our container's
+# "root" process spawned by cpud).
+#
+# classic chroot-mounts.  feel free to add more.
+dd of=$SCRATCH/cpu-fstab status=none <<-EOF
+proc /tmp/cpu/proc proc rw 0 0
+/sys /tmp/cpu/sys none bind,slave,rec 0 0
+/dev /tmp/cpu/dev none bind,slave,rec 0 0
+/run /tmp/cpu/run none bind,slave,rec 0 0
+EOF
+
+# cpud will try to chdir to PWD *before* running our command, which is chroot.
+# our PWD might not exist on the guest, so we have to set it to some directory
+# we know exists in the private namespace of our container in the guest: '/'.
+# So we need to tell cpu that PWD='/'.  However, we want to run our $CMD from
+# PWD, so we'll stash it in a trampoline script.  Critically, we'll cd into the
+# PWD *after* our chroot, when PWD makes sense.  Note that $SCRATCH is a host
+# directory which is visible from the guest!
+
+echo "cd $PWD;" > $SCRATCH/trampoline
+echo "$@" >> $SCRATCH/trampoline
+chmod +x $SCRATCH/trampoline
+
+# DEBUG
+# Keep these commands in sync with the real, non-debug ones below
+if [[ -v VMAPP_DEBUG ]]; then
+	echo "*************"
+	echo DEBUG MODE ON
+	echo
+	echo cpu command to run:
+	echo PWD=/ $VMAPP_CPU \
+		-9p \
+		-fstab $SCRATCH/cpu-fstab \
+		-key $SCRATCH/sshkey \
+		$IP_GUEST \
+		chroot /tmp/cpu $SCRATCH/trampoline
+	echo ""
+	echo "Run tinyreboot from the VM to exit, or manually kill the VMM"
+	echo "*************"
+	echo ""
+
+	$VMAPP_CHV --console off \
+		--cpus boot=$VMAPP_GUEST_CPUS \
+		--memory size=$VMAPP_GUEST_RAM \
+		--kernel $VMAPP_KERNEL \
+		--initramfs $SCRATCH/initrd_full.cpio.gz \
+		--net tap=$TAP_NAME,mac=,ip=,mask= \
+		--serial tty \
+		--cmdline "console=ttyS0 nozswap" \
+		;
+
+	cleanup
+	exit
+fi
+
+$VMAPP_CHV --console off \
+	--cpus boot=$VMAPP_GUEST_CPUS \
+	--memory size=$VMAPP_GUEST_RAM \
+	--kernel $VMAPP_KERNEL \
+	--initramfs $SCRATCH/initrd_full.cpio.gz \
+	--net tap=$TAP_NAME,mac=,ip=,mask= \
+	--cmdline "nozswap" \
+	&>/dev/null &
+
+CHV_PID=$!
+
+# we need to wait until we can ping cpud ($IP_GUEST:23).  if cpu tries to
+# connect with ssh immediately, it may take a long time and timeout.  from some
+# experimentation, the problem is two-fold: 
+#
+# - the IP route from $IP_HOST isn't bindable yet, so the packets get sent out
+# eth0 instead of $IP_HOST!  netcat can specify the source address, so we'll try
+# that in a tight loop until the interface is usable.  Not sure if that's due to
+# the ip link commands taking a long time to come up or if there's some neighbor
+# solicitation shenanigans going on.  Since the error is
+# 	"nc: bind failed: Cannot assign requested address"
+# I imagine the former.
+#
+# - we still get stuck at SYN_SENT, even via the right interface for about a
+# second.  e.g. (Host to guest)
+# tcp6       0      1 fd0:1c24:5698::2:34005  fd0:1c24:5698::15:23    SYN_SENT    630902/nc
+#
+while : ; do
+	nc -s $IP_HOST -z $IP_GUEST 23 2>/dev/null
+	[ $? -eq 0 ] && break
+done
+
+PWD=/ $VMAPP_CPU \
+	-9p \
+	-fstab $SCRATCH/cpu-fstab \
+	-key $SCRATCH/sshkey \
+	$IP_GUEST \
+	chroot /tmp/cpu $SCRATCH/trampoline
+
+# runs cleanup() on exit
