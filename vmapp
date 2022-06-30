@@ -45,6 +45,7 @@
 
 # HARDCODES, or override from your env
 VMAPP_VMM=${VMAPP_VMM:="qemu"}
+VMAPP_NET=${VMAPP_NET:="tun"}
 
 VMAPP_GUEST_CPUS=${VMAPP_GUEST_CPUS:="48"}
 VMAPP_GUEST_RAM=${VMAPP_GUEST_RAM:="1024M"}
@@ -86,21 +87,37 @@ esac
 [ ! -f $VMAPP_INITRD ] && echo Missing initrd && exit
 [ ! -x $VMAPP_CPU ] && echo Missing cpu binary && exit
 
+case "$VMAPP_NET" in
+TUN | tun)
+	dprint "Using tun/tap ipv6 networking"
+	VMAPP_NET=tun
+	;;
+*)
+	echo "unknown network setting $VMAPP_NET"
+	exit
+	;;
+esac
+
 R1=`printf '%04x' $RANDOM`
 R2=`printf '%04x' $RANDOM`
-IP_GUEST=fd0:$R1:$R2::15
-IP_HOST=fd0:$R1:$R2::2
-# Careful: ERANGE if the name is more than 15 or so
-TAP_NAME=tp-vm-$R1$R2
-BR_NAME=br-vm-$R1$R2
 
-# unique tun/tap and IP for this vmapp
-ip link add $BR_NAME type bridge
-ip addr add $IP_HOST/64 dev $BR_NAME
-ip link set up dev $BR_NAME
-ip tuntap add $TAP_NAME mode tap
-ip link set up dev $TAP_NAME
-ip link set $TAP_NAME master $BR_NAME
+case "$VMAPP_NET" in
+tun)
+	IP_GUEST=fd0:$R1:$R2::15
+	IP_HOST=fd0:$R1:$R2::2
+	# Careful: ERANGE if the name is more than 15 or so
+	TAP_NAME=tp-vm-$R1$R2
+	BR_NAME=br-vm-$R1$R2
+
+	# unique tun/tap and IP for this vmapp
+	ip link add $BR_NAME type bridge
+	ip addr add $IP_HOST/64 dev $BR_NAME
+	ip link set up dev $BR_NAME
+	ip tuntap add $TAP_NAME mode tap
+	ip link set up dev $TAP_NAME
+	ip link set $TAP_NAME master $BR_NAME
+	;;
+esac
 
 SCRATCH=/tmp/vmapp-$R1$R2
 VMM_PID=0
@@ -109,8 +126,10 @@ cleanup() {
 	set +e
 	kill $VMM_PID 2>/dev/null
 	rm -rf $SCRATCH
-	ip link delete $TAP_NAME 2>/dev/null
-	ip link delete $BR_NAME 2>/dev/null
+	if [[ $VMAPP_NET == "tun" ]]; then
+		ip link delete $TAP_NAME 2>/dev/null
+		ip link delete $BR_NAME 2>/dev/null
+	fi
 	# VMMs can bork your console.  CPU too, I think.
 	stty sane
 }
@@ -274,7 +293,7 @@ eval "${VMM_CMD[@]} &>/dev/null & VMM_PID=\$!"
 
 # we need to wait until we can ping cpud ($IP_GUEST:23).  if cpu tries to
 # connect with ssh immediately, it may take a long time and timeout.  from some
-# experimentation, the problem is two-fold: 
+# experimentation, the problem is two-fold:
 #
 # - the IP route from $IP_HOST isn't bindable yet, so the packets get sent out
 # eth0 instead of $IP_HOST!  netcat can specify the source address, so we'll try
