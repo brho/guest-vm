@@ -44,16 +44,46 @@
 # - Your / is shared via 9p.  In the future, we can use virtiofs.
 
 # HARDCODES, or override from your env
-VMAPP_KERNEL=${VMAPP_KERNEL:="vmlinux"}
-VMAPP_INITRD=${VMAPP_INITRD:="initramfs.cpio.gz"}
-VMAPP_CHV=${VMAPP_CHV:="./cloud-hypervisor"}
-VMAPP_CPU=${VMAPP_CPU:="./cpu"}
+VMAPP_VMM=${VMAPP_VMM:="qemu"}
+
 VMAPP_GUEST_CPUS=${VMAPP_GUEST_CPUS:="48"}
 VMAPP_GUEST_RAM=${VMAPP_GUEST_RAM:="1024M"}
 
-[ ! -f $VMAPP_KERNEL ] && echo Missing guest kernel && exit
+VMAPP_INITRD=${VMAPP_INITRD:="initramfs.cpio.gz"}
+VMAPP_CPU=${VMAPP_CPU:="./cpu"}
+
+# CHV specific
+VMAPP_CHV=${VMAPP_CHV:="./cloud-hypervisor"}
+VMAPP_KERNEL=${VMAPP_KERNEL:="vmlinux"}
+
+# Qemu specific
+VMAPP_QEMU=${VMAPP_QEMU:="./qemu-kvm-system-x86_64"}
+VMAPP_BZIMAGE=${VMAPP_KERNEL:="bzImage"}
+
+dprint() {
+	[[ -v VMAPP_DEBUG ]] && echo $*
+}
+
+case "$VMAPP_VMM" in
+QEMU | qemu)
+	dprint "Using qemu"
+	[ ! -x $VMAPP_QEMU ] && echo Missing qemu binary && exit
+	[ ! -f $VMAPP_BZIMAGE ] && echo Missing guest bzImage && exit
+	VMAPP_VMM=qemu
+	;;
+CHV | chv)
+	dprint "Using chv"
+	[ ! -x $VMAPP_CHV ] && echo Missing cloud-hypervisor binary && exit
+	[ ! -f $VMAPP_KERNEL ] && echo Missing guest kernel && exit
+	VMAPP_VMM=chv
+	;;
+*)
+	echo "unknown vmm $VMAPP_VMM"
+	exit
+	;;
+esac
+
 [ ! -f $VMAPP_INITRD ] && echo Missing initrd && exit
-[ ! -x $VMAPP_CHV ] && echo Missing cloud-hypervisor && exit
 [ ! -x $VMAPP_CPU ] && echo Missing cpu binary && exit
 
 R1=`printf '%04x' $RANDOM`
@@ -73,11 +103,11 @@ ip link set up dev $TAP_NAME
 ip link set $TAP_NAME master $BR_NAME
 
 SCRATCH=/tmp/vmapp-$R1$R2
-CHV_PID=0
+VMM_PID=0
 
 cleanup() {
 	set +e
-	kill $CHV_PID 2>/dev/null
+	kill $VMM_PID 2>/dev/null
 	rm -rf $SCRATCH
 	ip link delete $TAP_NAME 2>/dev/null
 	ip link delete $BR_NAME 2>/dev/null
@@ -96,9 +126,11 @@ cp $SCRATCH/sshkey.pub $SCRATCH/tc_root_extra/root/.ssh/
 if [[ -v VMAPP_DEBUG ]]; then
 	DEBUG_DASH_D="-d"
 	DEBUG_AMP="&"
+	GUEST_CMDLINE="console=ttyS0 nozswap"
 else
 	DEBUG_DASH_D=""
 	DEBUG_AMP=""
+	GUEST_CMDLINE="nozswap"
 fi
 
 mkdir -p $SCRATCH/tc_root_extra/etc/init.d
@@ -183,8 +215,8 @@ echo "cd $PWD;" > $SCRATCH/trampoline
 echo "$@" >> $SCRATCH/trampoline
 chmod +x $SCRATCH/trampoline
 
-# DEBUG
-# Keep these commands in sync with the real, non-debug ones below
+# This is of dubious value with qemu, since it (or SeaBIOS) will reset your
+# console and you can't scroll back.
 if [[ -v VMAPP_DEBUG ]]; then
 	echo "*************"
 	echo DEBUG MODE ON
@@ -200,31 +232,45 @@ if [[ -v VMAPP_DEBUG ]]; then
 	echo "Run tinyreboot from the VM to exit, or manually kill the VMM"
 	echo "*************"
 	echo ""
+fi
 
-	$VMAPP_CHV --console off \
-		--cpus boot=$VMAPP_GUEST_CPUS \
-		--memory size=$VMAPP_GUEST_RAM \
-		--kernel $VMAPP_KERNEL \
-		--initramfs $SCRATCH/initrd_full.cpio.gz \
-		--net tap=$TAP_NAME,mac=,ip=,mask= \
-		--serial tty \
-		--cmdline "console=ttyS0 nozswap" \
-		;
+VMM_CMD=()
 
+case "$VMAPP_VMM" in
+qemu)
+	VMM_CMD+=($VMAPP_QEMU -enable-kvm -cpu host -nographic)
+	VMM_CMD+=(-smp $VMAPP_GUEST_CPUS)
+	VMM_CMD+=(-m $VMAPP_GUEST_RAM)
+	VMM_CMD+=(-kernel $VMAPP_BZIMAGE)
+	VMM_CMD+=(-initrd $SCRATCH/initrd_full.cpio.gz)
+	# Need to ensure the quotes make it into the cmdline to preserve
+	# whitespace for multiple commands
+	VMM_CMD+=(-append \"$GUEST_CMDLINE\")
+	VMM_CMD+=(-device virtio-net-pci,netdev=vmnet,mac=00:01:02:03:04:0b)
+	VMM_CMD+=(-netdev tap,id=vmnet,ifname=$TAP_NAME,script=no,downscript=no)
+	;;
+chv)
+	VMM_CMD+=($VMAPP_CHV --console off)
+	VMM_CMD+=(--cpus boot=$VMAPP_GUEST_CPUS)
+	VMM_CMD+=(--memory size=$VMAPP_GUEST_RAM)
+	VMM_CMD+=(--kernel $VMAPP_KERNEL)
+	VMM_CMD+=(--initramfs $SCRATCH/initrd_full.cpio.gz)
+	VMM_CMD+=(--serial tty)
+	# Need to ensure the quotes make it into the cmdline to preserve
+	# whitespace for multiple commands
+	VMM_CMD+=(--cmdline \"$GUEST_CMDLINE\")
+	VMM_CMD+=(--net tap=$TAP_NAME,mac=,ip=,mask=)
+	;;
+esac
+
+if [[ -v VMAPP_DEBUG ]]; then
+	eval "${VMM_CMD[@]}"
 	cleanup
 	exit
 fi
 
-$VMAPP_CHV --console off \
-	--cpus boot=$VMAPP_GUEST_CPUS \
-	--memory size=$VMAPP_GUEST_RAM \
-	--kernel $VMAPP_KERNEL \
-	--initramfs $SCRATCH/initrd_full.cpio.gz \
-	--net tap=$TAP_NAME,mac=,ip=,mask= \
-	--cmdline "nozswap" \
-	&>/dev/null &
-
-CHV_PID=$!
+# Need to capture $! in the eval line, (and escape $) o/w you get eval's PID
+eval "${VMM_CMD[@]} &>/dev/null & VMM_PID=\$!"
 
 # we need to wait until we can ping cpud ($IP_GUEST:23).  if cpu tries to
 # connect with ssh immediately, it may take a long time and timeout.  from some
