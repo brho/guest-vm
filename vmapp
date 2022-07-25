@@ -172,9 +172,9 @@ mount -t devpts none /dev/pts
 
 # from tc-config
 # need to have loopback up, so that when cpud listens, it's on this:
-# tcp        0      0 :::23                   :::*                    LISTEN
+# tcp        0      0 :::17010                   :::*                    LISTEN
 # and not this:
-# tcp        0      0 0.0.0.0:23              0.0.0.0:*               LISTEN
+# tcp        0      0 0.0.0.0:17010              0.0.0.0:*               LISTEN
 ifconfig lo 127.0.0.1 up
 
 # from tc-sys.sh
@@ -291,7 +291,7 @@ fi
 # Need to capture $! in the eval line, (and escape $) o/w you get eval's PID
 eval "${VMM_CMD[@]} &>/dev/null & VMM_PID=\$!"
 
-# we need to wait until we can ping cpud ($IP_GUEST:23).  if cpu tries to
+# we need to wait until we can ping cpud ($IP_GUEST:17010).  if cpu tries to
 # connect with ssh immediately, it may take a long time and timeout.  from some
 # experimentation, the problem is two-fold:
 #
@@ -305,10 +305,10 @@ eval "${VMM_CMD[@]} &>/dev/null & VMM_PID=\$!"
 #
 # - we still get stuck at SYN_SENT, even via the right interface for about a
 # second.  e.g. (Host to guest)
-# tcp6       0      1 fd0:1c24:5698::2:34005  fd0:1c24:5698::15:23    SYN_SENT    630902/nc
+# tcp6       0      1 fd0:1c24:5698::2:34005  fd0:1c24:5698::15:17010    SYN_SENT    630902/nc
 #
 while : ; do
-	nc -s $IP_HOST -z $IP_GUEST 23 2>/dev/null
+	nc -s $IP_HOST -z $IP_GUEST 17010 2>/dev/null
 	[ $? -eq 0 ] && break
 done
 
