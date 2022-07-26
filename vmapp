@@ -92,6 +92,14 @@ TUN | tun)
 	dprint "Using tun/tap ipv6 networking"
 	VMAPP_NET=tun
 	;;
+VSOCK | vsock)
+	dprint "Using vsock networking"
+	VMAPP_NET=vsock
+	# CHV vsock support is like firecracker: proxy connections over a UDS
+	# with a magic protocol:
+	# https://github.com/firecracker-microvm/firecracker/blob/main/docs/vsock.md
+	[ $VMAPP_VMM != "qemu" ] && echo "Don't use vsock with firecracker derivatives" && exit
+	;;
 *)
 	echo "unknown network setting $VMAPP_NET"
 	exit
@@ -100,9 +108,12 @@ esac
 
 R1=`printf '%04x' $RANDOM`
 R2=`printf '%04x' $RANDOM`
+# CHV barfed on hex.  qemu and go were fine with it.
+VSOCK_CID=`printf '%d' 0x$R1$R2`
 
 case "$VMAPP_NET" in
 tun)
+	HAS_IP_NET="yes"
 	IP_GUEST=fd0:$R1:$R2::15
 	IP_HOST=fd0:$R1:$R2::2
 	# Careful: ERANGE if the name is more than 15 or so
@@ -116,6 +127,14 @@ tun)
 	ip tuntap add $TAP_NAME mode tap
 	ip link set up dev $TAP_NAME
 	ip link set $TAP_NAME master $BR_NAME
+
+	CPU_CPUD_HOSTNAME_ARG=$IP_GUEST
+	;;
+vsock)
+	HAS_IP_NET="no"
+	CPUD_VSOCK_SWITCH="-net vsock"
+
+	CPU_CPUD_HOSTNAME_ARG="-net vsock $VSOCK_CID"
 	;;
 esac
 
@@ -177,18 +196,20 @@ mount -t devpts none /dev/pts
 # tcp        0      0 0.0.0.0:17010              0.0.0.0:*               LISTEN
 ifconfig lo 127.0.0.1 up
 
-# from tc-sys.sh
-NIC=eth0
-ifconfig \$NIC up
-while : ; do
-	read CARRIER < /sys/class/net/\$NIC/carrier
-	# 1 is up, but CARRIER could be empty
-	[ "x\$CARRIER" == "x1" ] && break
-	usleep 10000
-done
-ifconfig \$NIC add $IP_GUEST/64
+if [[ x"$HAS_IP_NET" == x"yes" ]]; then
+	# from tc-sys.sh
+	NIC=eth0
+	ifconfig \$NIC up
+	while : ; do
+		read CARRIER < /sys/class/net/\$NIC/carrier
+		# 1 is up, but CARRIER could be empty
+		[ "x\$CARRIER" == "x1" ] && break
+		usleep 10000
+	done
+	ifconfig \$NIC add $IP_GUEST/64
+fi
 
-cpud $DEBUG_DASH_D -init -pk /root/.ssh/sshkey.pub $DEBUG_AMP
+cpud $DEBUG_DASH_D $CPUD_VSOCK_SWITCH -pk /root/.ssh/sshkey.pub $DEBUG_AMP
 
 echo "cpud exited, might be in trouble unless you're debugging!"
 
@@ -245,7 +266,7 @@ if [[ -v VMAPP_DEBUG ]]; then
 		-9p \
 		-fstab $SCRATCH/cpu-fstab \
 		-key $SCRATCH/sshkey \
-		$IP_GUEST \
+		$CPU_CPUD_HOSTNAME_ARG \
 		chroot /tmp/cpu $SCRATCH/trampoline
 	echo ""
 	echo "Run tinyreboot from the VM to exit, or manually kill the VMM"
@@ -265,8 +286,11 @@ qemu)
 	# Need to ensure the quotes make it into the cmdline to preserve
 	# whitespace for multiple commands
 	VMM_CMD+=(-append \"$GUEST_CMDLINE\")
-	VMM_CMD+=(-device virtio-net-pci,netdev=vmnet,mac=00:01:02:03:04:0b)
-	VMM_CMD+=(-netdev tap,id=vmnet,ifname=$TAP_NAME,script=no,downscript=no)
+	if [[ x"$HAS_IP_NET" == x"yes" ]]; then
+		VMM_CMD+=(-device virtio-net-pci,netdev=vmnet,mac=00:01:02:03:04:0b)
+		VMM_CMD+=(-netdev tap,id=vmnet,ifname=$TAP_NAME,script=no,downscript=no)
+	fi
+	VMM_CMD+=(-device vhost-vsock-pci,guest-cid=$VSOCK_CID)
 	;;
 chv)
 	VMM_CMD+=($VMAPP_CHV --console off)
@@ -278,7 +302,13 @@ chv)
 	# Need to ensure the quotes make it into the cmdline to preserve
 	# whitespace for multiple commands
 	VMM_CMD+=(--cmdline \"$GUEST_CMDLINE\")
-	VMM_CMD+=(--net tap=$TAP_NAME,mac=,ip=,mask=)
+	if [[ x"$HAS_IP_NET" == x"yes" ]]; then
+		VMM_CMD+=(--net tap=$TAP_NAME,mac=,ip=,mask=)
+	fi
+	# This doesn't actually use vhost vsockets.  The host side has to ask
+	# vsock-uds to make the connection with a magic protocol.  The guest
+	# uses a vsocket still, but the host side is a mess.
+	VMM_CMD+=(--vsock cid=$VSOCK_CID,socket=$SCRATCH/vsock-uds)
 	;;
 esac
 
@@ -291,32 +321,41 @@ fi
 # Need to capture $! in the eval line, (and escape $) o/w you get eval's PID
 eval "${VMM_CMD[@]} &>/dev/null & VMM_PID=\$!"
 
-# we need to wait until we can ping cpud ($IP_GUEST:17010).  if cpu tries to
-# connect with ssh immediately, it may take a long time and timeout.  from some
-# experimentation, the problem is two-fold:
-#
-# - the IP route from $IP_HOST isn't bindable yet, so the packets get sent out
-# eth0 instead of $IP_HOST!  netcat can specify the source address, so we'll try
-# that in a tight loop until the interface is usable.  Not sure if that's due to
-# the ip link commands taking a long time to come up or if there's some neighbor
-# solicitation shenanigans going on.  Since the error is
-# 	"nc: bind failed: Cannot assign requested address"
-# I imagine the former.
-#
-# - we still get stuck at SYN_SENT, even via the right interface for about a
-# second.  e.g. (Host to guest)
-# tcp6       0      1 fd0:1c24:5698::2:34005  fd0:1c24:5698::15:17010    SYN_SENT    630902/nc
-#
-while : ; do
-	nc -s $IP_HOST -z $IP_GUEST 17010 2>/dev/null
-	[ $? -eq 0 ] && break
-done
+if [[ x"$HAS_IP_NET" == x"yes" ]]; then
+	# we need to wait until we can ping cpud ($IP_GUEST:17010).  if cpu
+	# tries to connect with ssh immediately, it may take a long time and
+	# timeout.  from some experimentation, the problem is two-fold:
+	#
+	# - the IP route from $IP_HOST isn't bindable yet, so the packets get
+	# sent out eth0 instead of $IP_HOST!  netcat can specify the source
+	# address, so we'll try that in a tight loop until the interface is
+	# usable.  Not sure if that's due to the ip link commands taking a long
+	# time to come up or if there's some neighbor solicitation shenanigans
+	# going on.  Since the error is
+	# 	"nc: bind failed: Cannot assign requested address"
+	# I imagine the former.
+	#
+	# - we still get stuck at SYN_SENT, even via the right interface for
+	# about a
+	# second.  e.g. (Host to guest)
+	# tcp6       0      1 fd0:1c24:5698::2:34005  fd0:1c24:5698::15:17010    SYN_SENT    630902/nc
+	#
+	while : ; do
+		nc -s $IP_HOST -z $IP_GUEST 17010 2>/dev/null
+		[ $? -eq 0 ] && break
+	done
+else
+	# Sorry.  Not sure if there's a good way to ping over VSOCK yet.  We
+	# could use vsock-cat, but this whole check will go away once cpu uses
+	# "dut mode"
+	sleep 2
+fi
 
 PWD=/ $VMAPP_CPU \
 	-9p \
 	-fstab $SCRATCH/cpu-fstab \
 	-key $SCRATCH/sshkey \
-	$IP_GUEST \
+	$CPU_CPUD_HOSTNAME_ARG \
 	chroot /tmp/cpu $SCRATCH/trampoline
 
 # runs cleanup() on exit
