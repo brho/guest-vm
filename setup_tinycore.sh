@@ -65,10 +65,14 @@ sudo touch tc_root/etc/sysconfig/superuser
 sudo sed -i 's/38400 tty1/115200 tty1/' tc_root/etc/inittab
 sudo sed -i 's/38400 tty1/115200 tty1/' tc_root/sbin/autologin
 
-# Straight-up replacement of TC's mostly-empty bootlocal.sh
-sudo dd of=tc_root/opt/bootlocal.sh status=none << EOF
+# Straight-up replacement of TC's bootsync.sh
+sudo dd of=tc_root/opt/bootsync.sh status=none << EOF
 #!/bin/sh
-# put other system startup commands here
+# put other system startup commands here, the boot process will wait until they complete.
+# Use bootlocal.sh for system startup commands that can run in the background
+# and therefore not slow down the boot process.
+/usr/bin/sethostname box
+/opt/bootlocal.sh &
 
 ######## CONSOLE
 # Tinycore's default is:
@@ -90,6 +94,13 @@ fi
 
 mkdir /lib64
 mount --bind /lib /lib64
+EOF
+sudo chmod +x tc_root/opt/bootsync.sh
+#
+# Straight-up replacement of TC's bootlocal.sh
+sudo dd of=tc_root/opt/bootlocal.sh status=none << EOF
+#!/bin/sh
+# put other system startup commands here
 
 [[ -f /root/tc-sys.sh ]] && sh /root/tc-sys.sh
 EOF
