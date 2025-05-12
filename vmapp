@@ -353,6 +353,7 @@ fi
 
 PWD=/ $VMAPP_CPU \
 	-9p \
+	-sp 17010 \
 	-fstab $SCRATCH/cpu-fstab \
 	-key $SCRATCH/sshkey \
 	$CPU_CPUD_HOSTNAME_ARG \
