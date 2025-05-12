@@ -100,6 +100,11 @@ VSOCK | vsock)
 	# https://github.com/firecracker-microvm/firecracker/blob/main/docs/vsock.md
 	[ $VMAPP_VMM != "qemu" ] && echo "Don't use vsock with firecracker derivatives" && exit
 	;;
+USER | user)
+	dprint "Using qemu user mode networking"
+	VMAPP_NET=user
+	[ $VMAPP_VMM != "qemu" ] && echo "User mode networking only with qemu" && exit
+	;;
 *)
 	echo "unknown network setting $VMAPP_NET"
 	exit
@@ -135,6 +140,18 @@ vsock)
 	CPUD_VSOCK_SWITCH="-net vsock"
 
 	CPU_CPUD_HOSTNAME_ARG="-net vsock $VSOCK_CID"
+	;;
+user)
+	HAS_IP_NET="yes"
+
+	# TODO: not quite yet.  the host-to-guest IP is different, need a port
+	# forward, etc.  also need to adjust rc.S config line
+	echo "TODO: implement the rest of user networking" && exit
+
+	IP_GUEST=10.0.2.15
+	IP_HOST=10.0.2.2
+
+	CPU_CPUD_HOSTNAME_ARG=$IP_GUEST
 	;;
 esac
 
