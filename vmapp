@@ -59,7 +59,7 @@ VMAPP_KERNEL=${VMAPP_KERNEL:="vmlinux"}
 
 # Qemu specific
 VMAPP_QEMU=${VMAPP_QEMU:="./qemu-kvm-system-x86_64"}
-VMAPP_BZIMAGE=${VMAPP_KERNEL:="bzImage"}
+VMAPP_BZIMAGE=${VMAPP_BZIMAGE:="bzImage"}
 
 dprint() {
 	[[ -v VMAPP_DEBUG ]] && echo $*
@@ -68,14 +68,14 @@ dprint() {
 case "$VMAPP_VMM" in
 QEMU | qemu)
 	dprint "Using qemu"
-	[ ! -x $VMAPP_QEMU ] && echo Missing qemu binary && exit
-	[ ! -f $VMAPP_BZIMAGE ] && echo Missing guest bzImage && exit
+	[ ! -x `which $VMAPP_QEMU` ] && echo Missing qemu binary :$VMAPP_QEMU: && exit
+	[ ! -f $VMAPP_BZIMAGE ] && echo Missing guest bzImage :$VMAPP_BZIMAGE: && exit
 	VMAPP_VMM=qemu
 	;;
 CHV | chv)
 	dprint "Using chv"
-	[ ! -x $VMAPP_CHV ] && echo Missing cloud-hypervisor binary && exit
-	[ ! -f $VMAPP_KERNEL ] && echo Missing guest kernel && exit
+	[ ! -x `which $VMAPP_CHV` ] && echo Missing cloud-hypervisor binary :$VMAPP_CHV: && exit
+	[ ! -f $VMAPP_KERNEL ] && echo Missing guest kernel :$VMAPP_KERNEL: && exit
 	VMAPP_VMM=chv
 	;;
 *)
@@ -84,8 +84,8 @@ CHV | chv)
 	;;
 esac
 
-[ ! -f $VMAPP_INITRD ] && echo Missing initrd && exit
-[ ! -x $VMAPP_CPU ] && echo Missing cpu binary && exit
+[ ! -f $VMAPP_INITRD ] && echo Missing initrd :$VMAPP_INITRD: && exit
+[ ! -x `which $VMAPP_CPU` ] && echo Missing cpu binary :$VMAPP_CPU: && exit
 
 case "$VMAPP_NET" in
 TUN | tun)
