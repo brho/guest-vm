@@ -20,6 +20,8 @@
 set -e
 trap "exit" INT
 
+[ -n "$SKIP_KERNEL" ] && echo "Don't SKIP_KERNEL if you have modules" && sleep 5
+
 # Set this to the ssh key name, e.g. db_rsa (not .pub) you want to install in the
 # guest.  You'll be able to log in with this key and ssh *from* the guest with
 # it too.
