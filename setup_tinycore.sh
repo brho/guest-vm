@@ -49,9 +49,12 @@ sudo mkdir -p tc_root/home/tc
 # Even if we don't override rcS, I can't stand the screen clear
 sudo sed -i '/^clear$/d' tc_root/etc/init.d/rcS
 
-# We don't want the RTC and don't build it into the kernel.  TC has the 'nortc'
-# command line parameter, but I sometimes forget to add it.
-sudo sed -i 's/### END functions/### END functions\n\nNORTC=1/' tc_root/etc/init.d/tc-config
+# Tinycore has a bunch of options controlled by the kernel command line, like
+# nortc and nozswap.  We don't want them and don't build them into the kernel.
+# I often forget to add those parameters and then the system hangs -
+# particularly on zswap.  Hardcode those features off in the ghettoest way
+# possible.
+sudo sed -i 's/### END functions/### END functions\n\nNORTC=1\nNOZSWAP=1\n/' tc_root/etc/init.d/tc-config
 
 # Our auto-login will be root.  Tinycore has a 'tc' user, but this initrd is
 # used on machines where we ssh to Akaros, and using 'root' and the same keys
