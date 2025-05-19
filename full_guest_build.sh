@@ -15,68 +15,44 @@
 #
 # If you don't care about ssh or anything, consider just running
 # setup_tinycore.sh, optionally mucking with the contents of tc_root, and then
-# rebuild_cpio_and_linux.sh $LINUX_ROOT.
+# rebuild_cpio_and_linux.sh
 
 set -e
 trap "exit" INT
 
+if [ ! -f Localconfig ]; then
+	cp Localconfig.template Localconfig
+fi
+source ./Localconfig
+
 [ -n "$SKIP_KERNEL" ] && echo "Don't SKIP_KERNEL if you have modules" && sleep 5
 
-# Set this to the ssh key name, e.g. db_rsa (not .pub) you want to install in the
-# guest.  You'll be able to log in with this key and ssh *from* the guest with
-# it too.
-SSH_KEY=${SSH_KEY:=}
-
-# Set this to paths to binaries on your system, however you'd like.  They will
-# show up in /usr/local/bin/
-#
-# Careful of spaces.
-CUSTOM_BINARIES=${CUSTOM_BINARIES:=}
-# Most of my VM apps use this.
-CUSTOM_BINARIES+=" progs/bin/tinyreboot "
-## For mount-fs
-#CUSTOM_BINARIES+=" $HOME/go/bin/ufs "
-## This is relatively large (15 MB)
-#CUSTOM_BINARIES+="$HOME/src/linux/tools/perf/perf"
-## TC's taskset is mediocre.
-#CUSTOM_BINARIES+=" "
-#CUSTOM_BINARIES+=`which taskset`
-#CUSTOM_BINARIES+=" "
-
-# Will remove these files from the tinycore image.  Paths are relative to
-# tc_root.  Find victims with ./cat_cpio_gz.sh.  Can also automate this.
-#
-# Careful of spaces.
-CUSTOM_REMOVALS=""
-## fdisk and a lot of simple apps don't need C++
-#CUSTOM_REMOVALS+=" usr/lib/libstdc++.so.6.0.21 "
-
-usage()
-{
-	echo "Usage: ./`basename $0` NOT_RELATIVE_PATH_TO_LINUX_ROOT"
+if [[ -z $LINUX_REPO ]]; then
+	echo "LINUX_REPO is empty"
 	exit -1
-}
-
-if [ $# -lt 1 ]
-then
-	usage
 fi
-LINUX_ROOT=$1
-
-if [[ ${LINUX_ROOT:0:1} == "." ]]
-then
-	usage
+if [[ $LINUX_REPO == "/path/to/linux/repo" ]]; then
+	echo "LINUX_REPO is still set to $LINUX_REPO"
+	exit -1
+fi
+if [[ ${LINUX_REPO:0:1} == "." ]]; then
+	echo "LINUX_REPO must be a full path"
+	exit -1
+fi
+if [[ ${LINUX_REPO:0:1} == "~" ]]; then
+	echo "LINUX_REPO must not use ~"
+	exit -1
 fi
 
 DIR=`dirname "$0"`
-if [[ "$DIR" != "." ]]
-then
+if [[ "$DIR" != "." ]]; then
 	echo "Run the script $0 from within its directory: $DIR"
-	usage
+	exit -1
 fi
 
-# Kernel config
-cp kernel.config $LINUX_ROOT/.config
+if [ ! -z $KERNEL_CONFIG ]; then
+	cp $KERNEL_CONFIG $LINUX_REPO/.config
+fi
 
 # Build any of our tiny programs
 (cd progs && make)
@@ -84,7 +60,11 @@ cp kernel.config $LINUX_ROOT/.config
 ./setup_tinycore.sh
 
 for i in $CUSTOM_BINARIES; do
-	sudo cp $i tc_root/usr/local/bin/
+	# sudo cp doesn't work for some weird file types; bounce them off /tmp/
+	BOUNCE=/tmp/`basename $i`
+	rm -f $BOUNCE
+	cp $i $BOUNCE
+	sudo cp $BOUNCE tc_root/usr/local/bin/
 done
 sudo chmod -R o+rx tc_root/usr/local/bin/
 
@@ -117,16 +97,18 @@ Host host
 EOF
 	sudo cp tc_root/home/tc/.ssh/config tc_root/root/.ssh/
 
+else
+	echo "No SSH_KEY set, you won't be able to SSH in"
 fi
 
-./rebuild_cpio_and_linux.sh $LINUX_ROOT
+./rebuild_cpio_and_linux.sh
 
 ######## Copy it somewhere
 # Yes, the initrd name must be the same as the one in rebuild_cpio_and_linux.sh.
 
 #echo "Copying to devbox"
-#[ ! -n "$SKIP_KERNEL" ] && scp $LINUX_ROOT/vmlinux devbox:
-#scp $LINUX_ROOT/akaros/initramfs.cpio.gz devbox:
+#[ ! -n "$SKIP_KERNEL" ] && scp $LINUX_REPO/vmlinux devbox:
+#scp $LINUX_REPO/akaros/initramfs.cpio.gz devbox:
 
 # Example for building and deploying mount-fs:
 #./embed_payload.sh vm-apps/mount-fs.sh initramfs.cpio.gz obj/mount-fs

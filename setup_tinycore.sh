@@ -16,10 +16,12 @@
 set -e
 trap "exit" INT
 
-SSHD_PORT=22
+if [ ! -f Localconfig ]; then
+	cp Localconfig.template Localconfig
+fi
+source ./Localconfig
+
 VERBOSE=1
-#Other fun packages: strace tcpdump
-PACKAGES='openssh'
 
 # if you change this, blow away your tczs/ directory, since the TC webserver
 # doesn't seem to honor -N for the packages.  Though it did for corepure64.gz

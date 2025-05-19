@@ -17,32 +17,31 @@
 set -e
 trap "exit" INT
 
-MAKE_JOBS="${MAKE_JOBS:-8}"
-# keep this in sync with the published linux .config.  Must end in .cpio.gz.
-# This is relative to LINUX_ROOT.  This is all in case the initrd is built into
-# the kernel.
-INITRD_NAME=initramfs.cpio.gz
-
-usage()
-{
-	echo "Usage: ./`basename $0` NOT_RELATIVE_PATH_TO_LINUX_ROOT"
-	exit -1
-}
-
-if [ $# -lt 1 ]
-then
-	usage
+if [ ! -f Localconfig ]; then
+	cp Localconfig.template Localconfig
 fi
-LINUX_ROOT=$1
+source ./Localconfig
 
-if [[ ${LINUX_ROOT:0:1} == "." ]]
-then
-	usage
+if [[ -z $INITRD_NAME ]]; then
+	echo INITRD_NAME is empty
+	exit -1
+fi
+
+if [[ $LINUX_REPO == "/path/to/linux/repo" ]]; then
+	echo "LINUX_REPO is still set to $LINUX_REPO"
+	exit -1
+fi
+if [[ ${LINUX_REPO:0:1} == "." ]]; then
+	echo "LINUX_REPO must be a full path"
+	exit -1
+fi
+if [[ ${LINUX_REPO:0:1} == "~" ]]; then
+	echo "LINUX_REPO must not use ~"
+	exit -1
 fi
 
 DIR=`dirname "$0"`
-if [[ "$DIR" != "." ]]
-then
+if [[ "$DIR" != "." ]]; then
 	echo "Run the script $0 from within its directory: $DIR"
 	usage
 fi
@@ -60,10 +59,10 @@ then
 	rm -rf kernel_mods/
 	mkdir -p kernel_mods
 	KERNEL_MODS=`pwd`/kernel_mods
-	(cd $LINUX_ROOT &&
-	 > $LINUX_ROOT/$INITRD_NAME &&
-	make -j $MAKE_JOBS &&
-	make -j $MAKE_JOBS INSTALL_MOD_PATH=$KERNEL_MODS INSTALL_MOD_STRIP=1 modules modules_install
+	(cd $LINUX_REPO &&
+	 > $LINUX_REPO/$INITRD_NAME &&
+	$MAKE &&
+	make INSTALL_MOD_PATH=$KERNEL_MODS INSTALL_MOD_STRIP=1 modules_install
 	)
 	sudo cp -r kernel_mods/* tc_root/ || true
 else
@@ -78,16 +77,16 @@ echo "Rebuilding CPIO"
 sudo chown -R 1001 tc_root/home/tc
 
 (cd tc_root &&
-sudo find . -print | sudo cpio -H newc -o | gzip > $LINUX_ROOT/$INITRD_NAME
+sudo find . -print | sudo cpio -H newc -o | gzip > $LINUX_REPO/$INITRD_NAME
 )
 
 if [ ! -n "$SKIP_KERNEL" ]
 then
 	echo "Building Linux (maybe with embedded CPIO, based on CONFIGS)"
-	(cd $LINUX_ROOT &&
-	ARCH=x86_64 make -j $MAKE_JOBS
+	(cd $LINUX_REPO &&
+	$MAKE
 	)
-	echo "Final vmlinux at $LINUX_ROOT/vmlinux"
+	echo "Final vmlinux at $LINUX_REPO/vmlinux"
 fi
 
-echo "Compressed initramfs at $LINUX_ROOT/$INITRD_NAME"
+echo "Compressed initramfs at $LINUX_REPO/$INITRD_NAME"

@@ -7,33 +7,37 @@ Linux guest kernel and a tinycore (TC) image as an initrd.
 The scripts expect to be run from this directory and require sudo for mucking
 with the initrd.  Sorry.
 
-Typical usage: run full_guest_build.sh $FULL_PATH once, then as you muck with
-things, run rebuild_cpio_and_linux.sh $FULL_PATH.  If you aren't changing the
-kernel, run SKIP_KERNEL=1 ./rebuild_cpio_and_linux.sh.
+Typical usage: make a Localconfig from Localconfig.template, run
+full_guest_build.sh once, then as you muck with things, run
+rebuild_cpio_and_linux.sh If you aren't changing the kernel, run SKIP_KERNEL=1
+./rebuild_cpio_and_linux.sh.
 
 
 Scripts:
 --------------------
-- full_guest_build.sh: produces vmlinux and initrd from scratch.  Calls the
-  other scripts.
-
-  Run with: ./full_guest_build.sh $FULL_PATH_TO_LINUX_REPO
-  - copies kernel.config to $FULL_PATH_TO_LINUX_REPO/.config
-  - setup_tinycore.sh (creates tc_root/)
-  - copies stuff into tc_root/
-  - rebuild_cpio_and_linux.sh
-
-  Customizations:
+- Localconfig: you must set this up, using Localconfig.template as an example.
+  Customizations in Localconfig:
   - CUSTOM_BINARIES: programs from your machine to add to tc_root/usr/local/bin
   - CUSTOM_REMOVALS: files to remove from tc_root.  e.g. libstdc++.
   - ssh keys (looks for my key named "db_rsa", provide your own keys)
+  - etc.
+
+
+- full_guest_build.sh: produces vmlinux and initrd from scratch.  Calls the
+  other scripts.
+
+  Run with: ./full_guest_build.sh
+  - optionally copies kernel.config to $LINUX_REPO/.config
+  - setup_tinycore.sh (creates tc_root/)
+  - copies stuff into tc_root/
+  - rebuild_cpio_and_linux.sh
 
 
 - rebuild_cpio_and_linux.sh: build linux (vmlinux & bzimage) and the initrd,
   using the contents of tc_root.  If you manually changed tc_root (edited files,
   added programs) or changed the kernel (including modules), run this.
 
-  Run with: ./rebuild_cpio_and_linux.sh $FULL_PATH_TO_LINUX_REPO
+  Run with: ./rebuild_cpio_and_linux.sh
   - builds the kernel modules
   - cpios tc_root; puts it in this directory.
   - builds the kernel; puts it in the linux repo.
