@@ -21,7 +21,9 @@ VERBOSE=1
 #Other fun packages: strace tcpdump
 PACKAGES='openssh'
 
-TC_URL=http://tinycorelinux.net/7.x/x86_64/
+# if you change this, blow away your tczs/ directory, since the TC webserver
+# doesn't seem to honor -N for the packages.  Though it did for corepure64.gz
+TC_URL=http://tinycorelinux.net/16.x/x86_64/
 
 DIR=`dirname "$0"`
 if [[ "$DIR" != "." ]]
@@ -31,7 +33,7 @@ then
 fi
 
 echo "Downloading TC distro"
-wget -q -nc $TC_URL/release/distribution_files/corepure64.gz
+wget -q -N $TC_URL/release/distribution_files/corepure64.gz
 
 echo "Extracting TC distro"
 sudo rm -rf tc_root
@@ -164,6 +166,7 @@ for i in "${!TCZS[@]}"; do
 	if [[ ${TCZS[$i]} != "depped" ]]; then
 		echo "Warning: $i has unmet dependencies! (Our bug)"
 	fi
+	# -N (timestamp) doesn't work on these
 	wget -q -nc $TC_URL/tcz/$i ||
 		echo "Failed to download $i; you might have runtime issues"
 done
@@ -192,16 +195,13 @@ sudo dd of=tc_root/usr/local/etc/ssh/sshd_config status=none <<-EOF
 # This is ssh server systemwide configuration file.
 Port $SSHD_PORT
 HostKey /usr/local/etc/ssh/ssh_host_rsa_key
-ServerKeyBits 1024
 LoginGraceTime 600
-KeyRegenerationInterval 3600
 PermitRootLogin yes
 StrictModes no
 X11Forwarding no
 PrintMotd yes
 SyslogFacility AUTH
 LogLevel INFO
-RSAAuthentication yes
 PasswordAuthentication no
 PermitEmptyPasswords no
 EOF
@@ -213,6 +213,11 @@ EOF
 #
 # You can change these on your own, precompute when building the initrd, or
 # whatever.  Note that these keys (and this file) are not secret in any way.
+#
+# Also, if you don't mind the startup time of recreating them, but do mind the
+# constant MITM warnings, you can suppress them in .ssh/config with these:
+#     StrictHostKeyChecking no
+#     UserKnownHostsFile /dev/null
 
 # Server rsa key:
 sudo dd of=tc_root/usr/local/etc/ssh/ssh_host_rsa_key status=none <<-EOF
@@ -276,6 +281,24 @@ sudo dd of=tc_root/usr/local/etc/ssh/ssh_host_ecdsa_key.pub status=none <<-EOF
 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBIMVmdBj3pfwsC5uYjHmG6JHJFpxPLlth4KPLJEDYabLcHupWEDFcnUrHoz1KZHSWXWloESEjbR/4xxo0FGG8cY= root@
 EOF
 sudo chmod 600 tc_root/usr/local/etc/ssh/ssh_host_ecdsa_key.pub
+
+# ED25519
+sudo dd of=tc_root/usr/local/etc/ssh/ssh_host_ed25519_key status=none <<-EOF
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACC1YpgnwLzpcAUT2DcCIHfVz/jUcks9DRiRAaLespy9SAAAAJB5Bg6neQYO
+pwAAAAtzc2gtZWQyNTUxOQAAACC1YpgnwLzpcAUT2DcCIHfVz/jUcks9DRiRAaLespy9SA
+AAAEDGKba253qYE7LZmcGhfdh7tXx1x7TtkA3aZxR6NrnqqbVimCfAvOlwBRPYNwIgd9XP
++NRySz0NGJEBot6ynL1IAAAACHJvb3RAYm94AQIDBAU=
+-----END OPENSSH PRIVATE KEY-----
+EOF
+sudo chmod 600 tc_root/usr/local/etc/ssh/ssh_host_ed25519_key
+
+sudo dd of=tc_root/usr/local/etc/ssh/ssh_host_ed25519_key.pub status=none <<-EOF
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILVimCfAvOlwBRPYNwIgd9XP+NRySz0NGJEBot6ynL1I root@
+EOF
+sudo chmod 600 tc_root/usr/local/etc/ssh/ssh_host_ed25519_key.pub
+
 
 sudo bash <<-EOF
 echo '/usr/local/etc/init.d/openssh start' >> tc_root/opt/bootlocal.sh
