@@ -207,6 +207,7 @@ SyslogFacility AUTH
 LogLevel INFO
 PasswordAuthentication no
 PermitEmptyPasswords no
+IPQoS none
 EOF
 
 # The RSA key is same server key Akaros uses for its default dropbear setup.
