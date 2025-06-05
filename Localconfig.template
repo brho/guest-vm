@@ -11,7 +11,8 @@
 if [[ -z $LOCALCONFIG_SOURCED ]]; then
 LOCALCONFIG_SOURCED=1
 
-
+# Must be set to a full, non-relative path.  $HOME works, ~ does not.
+UROOT_REPO=${UROOT_REPO:="/path/to/u-root/repo"}
 # Must be set to a full, non-relative path.  $HOME works, ~ does not.
 LINUX_REPO=${LINUX_REPO:="/path/to/linux/repo"}
 
@@ -27,29 +28,18 @@ INITRD_NAME=initramfs.cpio.gz
 # Command to make the Linux kernel.
 MAKE=${MAKE:="ARCH=x86_64 make -j 8"}
 
-# Space-separated list of Tinycore packages to install.  For a list of available
-# packages, see http://tinycorelinux.net/16.x/x86_64/tcz/
-PACKAGES+=" openssh "
-
 # Set this to the full path to the ssh key, e.g. db_rsa (not .pub) you want to
 # install in the guest.  You'll be able to ssh *in* and *out* with this key
 SSH_KEY=${SSH_KEY:=""}
 SSHD_PORT=${SSHD_PORT:="22"}
 
-# Space-separated paths to binaries on your system you want included in the
-# initramfs They will be copied to /usr/local/bin/
-CUSTOM_BINARIES+=" "
-## Most of my VM apps use this.
-#CUSTOM_BINARIES+=" progs/bin/tinyreboot "
-## TC's taskset is mediocre.
-#CUSTOM_BINARIES+=`which taskset`
-
-# Space-separated paths to be removed from the initramfs.  Paths are relative
-# to tc_root.  Find victims with ./cat_cpio_gz.sh.
-CUSTOM_REMOVALS+=" "
-## fdisk and a lot of simple apps don't need C++
-#CUSTOM_REMOVALS+=" usr/lib/libstdc++.so.6.0.21 "
-
+# Space-separated extra args to u-root, particularly to get binaries on your
+# system you want included in the initramfs.  Format is -files WHAT:WHERE
+UROOT_EXTRA+=" -files `which bash`:bin/bash "
+UROOT_EXTRA+=" -defaultsh /bin/bash "
+#UROOT_EXTRA+=" -files progs/bin/tinyreboot:bin/tinyreboot "
+## For mount-fs
+#UROOT_EXTRA+=" -files $HOME/go/bin/ufs:bin/ufs "
 
 # endif, for the bash #ifndef, #define, endif pattern
 fi

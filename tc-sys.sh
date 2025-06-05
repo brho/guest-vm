@@ -15,6 +15,7 @@ NIC=eth0
 
 read MAC < /sys/class/net/$NIC/address
 
+# TODO: Convert to ip commands for u-root
 if [[ "$MAC" == "00:01:02:03:04:0b" ]]; then
 	echo "Detected magic paravirt mac address on $NIC, setting up static networking" > /dev/kmsg
 	killall udhcpc 2> /dev/null
@@ -40,5 +41,7 @@ if [[ "$MAC" == "00:01:02:03:04:0b" ]]; then
 	echo "Static networking complete" > /dev/kmsg
 else
 	echo "Unknown host, turning on DHCP" > /dev/kmsg
-	/etc/init.d/dhcp.sh
+	dhclient &
 fi
+
+# Some extra stuff will get added here from full_guest_build.sh

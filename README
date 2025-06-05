@@ -1,89 +1,45 @@
 brho@google.com
-2022-02-15
+2025-06-05
 
 This directory contains a bunch of scripts and working directories to build a
-Linux guest kernel and a tinycore (TC) image as an initrd.
+Linux guest kernel and a u-root image plus some extra junk.
 
-The scripts expect to be run from this directory and require sudo for mucking
-with the initrd.  Sorry.
+Typical usage: make a Localconfig from Localconfig.template and run
+full_guest_build.sh.
 
-Typical usage: make a Localconfig from Localconfig.template, run
-full_guest_build.sh once, then as you muck with things, run
-rebuild_cpio_and_linux.sh If you aren't changing the kernel, run SKIP_KERNEL=1
-./rebuild_cpio_and_linux.sh.
+You'll need to acquire u-root (git@github.com:u-root/u-root.git), go build it,
+and set UROOT_REPO in your Localconfig.  
+
+You also must set LINUX_REPO.
+
+I used to have a bunch of extra scripts that did things like install tinycore
+packages or let you fine-tune what parts of the build to use.  If you need
+that, check out the git history.
+
+TODO: tc-sys.sh's magic IP configuration is busted - no ifconfig in u-root.
+Need to convert that stuff to ip commands.
 
 
-Scripts:
+Various files and directories:
 --------------------
 - Localconfig: you must set this up, using Localconfig.template as an example.
   Customizations in Localconfig:
-  - CUSTOM_BINARIES: programs from your machine to add to tc_root/usr/local/bin
-  - CUSTOM_REMOVALS: files to remove from tc_root.  e.g. libstdc++.
+  - UROOT_EXTRA: commands to u-root, in particular to add files/programs from
+    your machine to the initramfs.
   - ssh keys (looks for my key named "db_rsa", provide your own keys)
   - etc.
 
-
 - full_guest_build.sh: produces vmlinux and initrd from scratch.  Calls the
   other scripts.
-
-  Run with: ./full_guest_build.sh
   - optionally copies kernel.config to $LINUX_REPO/.config
-  - setup_tinycore.sh (creates tc_root/)
-  - copies stuff into tc_root/
-  - rebuild_cpio_and_linux.sh
+  - builds u-root initramfs
+  - builds the extra "TC" initramfs, including kernel modules
+  - slams them together, rebuilds the kernel
 
-
-- rebuild_cpio_and_linux.sh: build linux (vmlinux & bzimage) and the initrd,
-  using the contents of tc_root.  If you manually changed tc_root (edited files,
-  added programs) or changed the kernel (including modules), run this.
-
-  Run with: ./rebuild_cpio_and_linux.sh
-  - builds the kernel modules
-  - cpios tc_root; puts it in this directory.
-  - builds the kernel; puts it in the linux repo.
-
-  You can skip the kernel build if you want with SKIP_KERNEL=1.
-
-
-- setup_tinycore.sh: downloads TC, extracts to tc_core, and installs PACKAGES.
-  Edit the PACKAGES variable to add any tinycore packages you want, e.g.
-  openssh.  The script should find and include any dependencies.  If you change
-  any of the Magic Symlink Overrides, e.g. rcS-link, you need to rerun this.
-
-  Run with: ./setup_tinycore.sh
-  - Optionally overrides rcS and tc-sys.sh.
-  - Misc console setup
-  - Downloads and extracts PACKAGES and dependencies to tc_root
-  - SSH server setup, including hokey server private keys
-
-
-Various directories:
---------------------
-- kernel_mods: storage for kernel mods created during the kernel build.
 - progs: compiled helper programs to run in the guest.
 - tc_root: TC's root filesystem.  Extracted and edited by the scripts
-- tczs: storage for downloaded TC programs, e.g. openssh and openssl
 - vm-apps: Akaros scripts to run an app as a guest VM, e.g. an ext4 9p server.
-
-
-Magic Symlink Overrides:
---------------------
-You may noticed symlinks such as "rcS-link -> xxx".  If these symlinks point to
-a file, it will override or install the file into the TC image.  These are quick
-ways to change up what your guest will do at boottime without editing tc_root/
-directly.
-
-- rcS-link: replace the low-level /etc/init.d/rcS script.  This short-circuits
-  most of TC's initialization.  The default rcS mounts /proc, /, fstab, and runs
-  tc-config.  tc-config does the bulk of TC's init, such as modprobing, cmdline
-  parsing, udev stuff, etc.  Ultimately, this calls /opt/bootlocal.sh and
-  tc-sys.sh.  For an example of how to override rcS, check out
-  rcS-example-apps-and-info.  Note that "rcS-link -> xxx" is a dead link, so we
-  will not automatically override rcS.
-
-- tc-sys.sh: script run during the guest's boot, called from TC's
-  /opt/bootlocal.sh.  I use this for setting up networking.  If you override
-  rcS, you'll need to call this manually from your own rcS.
+- tc-sys.sh: script run during the guest's boot, called from u-root's init-cmd.
 
 
 Misc helpers:
@@ -111,7 +67,8 @@ Example Commands to run the Virtual Machine:
 		map_diagnostics
 		port:tcp:23:22
 
-	With this setup, you can ssh to localhost:23 and it'll port-foward to the guest.
+	With this setup, you can ssh to localhost:23 and it'll port-foward to
+	the guest.
 
 - Tun/Tap:
 	A bunch of VMMs on Linux want a tun/tap setup.  I use tun-up.sh, which
@@ -193,6 +150,11 @@ Example Commands to run the Virtual Machine:
 	If the guest is listening on host port 5555 (from my example qemu
 	usermode networking), set up your ~/.ssh/config like so:  The
 	IdentityFile is the one you specified in full_guest_build.sh.
+
+	If you mind the constant MITM warnings, you can suppress them in
+	.ssh/config with these:
+		StrictHostKeyChecking no
+		UserKnownHostsFile /dev/null
 
 	Host qemu
 		Hostname 127.0.0.1

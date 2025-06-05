@@ -1,21 +1,11 @@
 #!/bin/bash
 # Barret Rhoden (brho@google.com)
 #
-# Helper script - sets up the tinycore image (setup_tinycore.sh), adds custom
-# binaries and config files, builds the CPIO and guest kernel
-# (rebuild_cpio_and_linux.sh), and copies the guest to various places.
+# Builds the kernel + initramfs.
 #
 # You need to call this from the directory it is in and pass it a non-relative
-# path to a linux repo.  You can set SKIP_KERNEL=1 to avoid rebuilding the guest
+# path to a linux repo.  You can set SKIP_KERNEL=1 to avoid rebuilding the
 # kernel.
-#
-# You'll want to customize this for your environment.  You'll also want to set
-# the PACKAGES variable in setup_tinycore.sh.  This is heavily
-# customized for brho's system.
-#
-# If you don't care about ssh or anything, consider just running
-# setup_tinycore.sh, optionally mucking with the contents of tc_root, and then
-# rebuild_cpio_and_linux.sh
 
 set -e
 trap "exit" INT
@@ -44,6 +34,23 @@ if [[ ${LINUX_REPO:0:1} == "~" ]]; then
 	exit -1
 fi
 
+if [[ -z $UROOT_REPO ]]; then
+	echo "UROOT_REPO is empty"
+	exit -1
+fi
+if [[ $UROOT_REPO == "/path/to/u-root/repo" ]]; then
+	echo "UROOT_REPO is still set to $UROOT_REPO"
+	exit -1
+fi
+if [[ ${UROOT_REPO:0:1} == "." ]]; then
+	echo "UROOT_REPO must be a full path"
+	exit -1
+fi
+if [[ ${UROOT_REPO:0:1} == "~" ]]; then
+	echo "UROOT_REPO must not use ~"
+	exit -1
+fi
+
 DIR=`dirname "$0"`
 if [[ "$DIR" != "." ]]; then
 	echo "Run the script $0 from within its directory: $DIR"
@@ -54,40 +61,38 @@ if [ ! -z $KERNEL_CONFIG ]; then
 	cp $KERNEL_CONFIG $LINUX_REPO/.config
 fi
 
-# Build any of our tiny programs
+# Build any of our tiny programs, which might be included via UROOT_EXTRA
 (cd progs && make)
 
-./setup_tinycore.sh
+# Build u-root initramfs
+UROOT_CPIO=`pwd`/initramfs.uroot.cpio
+UROOT_CMD=(./u-root)
+UROOT_CMD+=(-uinitcmd=\"/tc-sys.sh\")
+UROOT_CMD+=($UROOT_EXTRA)
+UROOT_CMD+=(-o $UROOT_CPIO)
+echo ${UROOT_CMD[@]}
 
-for i in $CUSTOM_BINARIES; do
-	# sudo cp doesn't work for some weird file types; bounce them off /tmp/
-	BOUNCE=/tmp/`basename $i`
-	rm -f $BOUNCE
-	cp $i $BOUNCE
-	sudo cp $BOUNCE tc_root/usr/local/bin/
-done
-sudo chmod -R o+rx tc_root/usr/local/bin/
+(cd $UROOT_REPO && eval "${UROOT_CMD[@]}")
+echo "Built $UROOT_CPIO"
 
-for i in $CUSTOM_REMOVALS; do
-	sudo rm tc_root/$i
-done
+# Build tc_root initramfs
+rm -rf tc_root/
+mkdir tc_root
+cp -r tc-sys.sh tc_root/
+mkdir -p tc_root/root/
 
-######## SSH
-# Do your own stuff here.  This lets me ssh in and out as either tc or root
+# SSH Keys.  Putting them in root/.ssh just out of convention.
 if [ ! -z $SSH_KEY ]; then
 
-	sudo mkdir -p tc_root/home/tc/.ssh/
-	sudo cp $SSH_KEY.pub tc_root/home/tc/.ssh/authorized_keys
-	sudo cp $SSH_KEY.pub tc_root/home/tc/.ssh/
-	sudo cp $SSH_KEY tc_root/home/tc/.ssh/
+	mkdir -p tc_root/root/.ssh/
+	cp $SSH_KEY.pub tc_root/root/.ssh/authorized_keys
+	cp $SSH_KEY.pub tc_root/root/.ssh/
+	cp $SSH_KEY tc_root/root/.ssh/
 
-	sudo mkdir -p tc_root/root/.ssh/
-	sudo cp $SSH_KEY.pub tc_root/root/.ssh/authorized_keys
-	sudo cp $SSH_KEY.pub tc_root/root/.ssh/
-	sudo cp $SSH_KEY tc_root/root/.ssh/
-
-	# This implies the VM is using qemu mode addressing
-	sudo dd of=tc_root/home/tc/.ssh/config status=none << EOF
+	# Let the VM ssh into the host easily.
+	# This implies the VM is using qemu mode addressing.
+	# YMMV
+	dd of=tc_root/root/.ssh/config status=none << EOF
 Host host
 	Hostname 10.0.2.2
 	User root
@@ -95,22 +100,49 @@ Host host
 	IdentityFile ~/.ssh/`basename $SSH_KEY`
 	StrictHostKeyChecking no
 EOF
-	sudo cp tc_root/home/tc/.ssh/config tc_root/root/.ssh/
+
+	# Starts u-root's sshd
+	bash <<-EOF
+	echo "echo Starting sshd" >> tc_root/tc-sys.sh
+	echo "sshd -keys /root/.ssh/authorized_keys -privatekey /root/.ssh/`basename $SSH_KEY` -port $SSHD_PORT &" >> tc_root/tc-sys.sh
+	EOF
 
 else
 	echo "No SSH_KEY set, you won't be able to SSH in"
 fi
 
-./rebuild_cpio_and_linux.sh
+# uinitcmd isn't calling the shell afterwards.  and -i for bash, since there's
+# some other u-root issue with bash (at least in a VM)
+echo "/bin/sh -i" >> tc_root/tc-sys.sh
 
-######## Copy it somewhere
-# Yes, the initrd name must be the same as the one in rebuild_cpio_and_linux.sh.
+if [ ! -n "$SKIP_KERNEL" ]; then
+	echo "Building Linux modules, adding them to tc_root/"
+	mkdir -p tc_root/lib/modules/
+	KERNEL_MODS=`pwd`/tc_root/lib/modules/
+	(cd $LINUX_REPO &&
+	 > $LINUX_REPO/$INITRD_NAME &&
+	$MAKE &&
+	make INSTALL_MOD_PATH=$KERNEL_MODS INSTALL_MOD_STRIP=1 modules_install
+	)
+fi
 
-#echo "Copying to devbox"
-#[ ! -n "$SKIP_KERNEL" ] && scp $LINUX_REPO/vmlinux devbox:
-#scp $LINUX_REPO/akaros/initramfs.cpio.gz devbox:
+TC_ROOT_CPIO=initramfs.tc_root.cpio
+(cd tc_root && find . -print | cpio -H newc -o > ../$TC_ROOT_CPIO)
+echo "Built $TC_ROOT_CPIO"
+
+# Smash!
+# Careful... Linux can extract concatenated cpios, but the cpio tool won't.  The
+# first cpio has the sentinel TRAILER!!! file that will end the cpio...
+cat $UROOT_CPIO $TC_ROOT_CPIO | gzip > $LINUX_REPO/$INITRD_NAME
+
+if [ ! -n "$SKIP_KERNEL" ]
+then
+	echo "Building Linux (maybe with embedded CPIO, based on CONFIGS)"
+	(cd $LINUX_REPO && $MAKE)
+	echo "Final vmlinux at $LINUX_REPO/vmlinux"
+fi
+
+echo "Compressed final initramfs at $LINUX_REPO/$INITRD_NAME"
 
 # Example for building and deploying mount-fs:
 #./embed_payload.sh vm-apps/mount-fs.sh initramfs.cpio.gz obj/mount-fs
-#
-#scp obj/mount-fs devbox:bin/
