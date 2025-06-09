@@ -70,6 +70,8 @@ UROOT_CMD=(./u-root)
 UROOT_CMD+=(-uinitcmd=\"/tc-sys.sh\")
 UROOT_CMD+=($UROOT_EXTRA)
 UROOT_CMD+=(-o $UROOT_CPIO)
+# non-option commands must be last...
+UROOT_CMD+=(core cmds/exp/modprobe)
 echo ${UROOT_CMD[@]}
 
 (cd $UROOT_REPO && eval "${UROOT_CMD[@]}")
@@ -117,8 +119,7 @@ echo "/bin/sh -i" >> tc_root/tc-sys.sh
 
 if [ ! -n "$SKIP_KERNEL" ]; then
 	echo "Building Linux modules, adding them to tc_root/"
-	mkdir -p tc_root/lib/modules/
-	KERNEL_MODS=`pwd`/tc_root/lib/modules/
+	KERNEL_MODS=`pwd`/tc_root/
 	(cd $LINUX_REPO &&
 	 > $LINUX_REPO/$INITRD_NAME &&
 	$MAKE &&
